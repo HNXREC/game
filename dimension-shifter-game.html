@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dimension Shifter</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            background-color: #000;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+        }
+        #dimension-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-size: 24px;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 32px;
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+        }
+        #restart-button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 18px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #restart-button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h2>Dimension Shifter</h2>
+        <p>Move: WASD or Arrow Keys</p>
+        <p>Shift Dimension: SPACE</p>
+        <p>Score: <span id="score">0</span></p>
+        <p>Time: <span id="time">60</span>s</p>
+    </div>
+    <div id="dimension-indicator">Dimension: A</div>
+    <div id="game-over">
+        <h2>Game Over!</h2>
+        <p>Final Score: <span id="final-score">0</span></p>
+        <p>Dimensions Shifted: <span id="dimensions-shifted">0</span></p>
+        <button id="restart-button">Play Again</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Game variables
+        let scene, camera, renderer, player;
+        let collectibles = [];
+        let obstacles = [];
+        let score = 0;
+        let dimensionShifts = 0;
+        let timeRemaining = 60;
+        let gameActive = false;
+        let currentDimension = 'A';
+        let dimensionColors = {
+            A: {
+                background: new THREE.Color(0x000033),
+                player: 0x00ffff,
+                collectibles: 0xffff00,
+                obstacles: 0xff0000
+            },
+            B: {
+                background: new THREE.Color(0x330000),
+                player: 0xff00ff,
+                collectibles: 0x00ff00,
+                obstacles: 0x0000ff
+            }
+        };
+        
+        // Controls
+        const keyState = {};
+        const playerSpeed = 0.2;
+        let canShiftDimension = true;
+        let shiftCooldown = 1000; // 1 second cooldown
+        
+        // Initialize the game
+        function init() {
+            // Reset game state
+            score = 0;
+            dimensionShifts = 0;
+            timeRemaining = 60;
+            gameActive = true;
+            currentDimension = 'A';
+            collectibles = [];
+            obstacles = [];
+            
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = dimensionColors[currentDimension].background;
+            
+            // Create camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.y = 5;
+            camera.position.z = 10;
+            camera.lookAt(new THREE.Vector3(0, 0, 0));
+            
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+            
+            // Create lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 20, 15);
+            scene.add(directionalLight);
+            
+            // Create ground plane
+            const groundGeometry = new THREE.PlaneGeometry(50, 50);
+            const groundMaterial = new THREE.MeshStandardMaterial({
+                color: 0x333333,
+                metalness: 0.2,
+                roughness: 0.8
+            });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+            
+            // Create grid
+            const gridHelper = new THREE.GridHelper(50, 50, 0x555555, 0x555555);
+            scene.add(gridHelper);
+            
+            // Create player
+            createPlayer();
+            
+            // Generate initial game elements
+            generateGameElements();
+            
+            // Set up event listeners
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
+            window.addEventListener('resize', handleResize);
+            document.getElementById('restart-button').addEventListener('click', restartGame);
+            
+            // Start game timer
+            const timerInterval = setInterval(() => {
+                if (gameActive) {
+                    timeRemaining--;
+                    document.getElementById('time').textContent = timeRemaining;
+                    
+                    if (timeRemaining <= 0) {
+                        endGame();
+                        clearInterval(timerInterval);
+                    }
+                }
+            }, 1000);
+            
+            // Start the game loop
+            animate();
+            
+            // Update UI
+            document.getElementById('score').textContent = score;
+            document.getElementById('dimension-indicator').textContent = 'Dimension: ' + currentDimension;
+            document.getElementById('game-over').style.display = 'none';
+        }
+        
+        function createPlayer() {
+            // Create a unique player shape - a tetrahedron with a ring
+            const group = new THREE.Group();
+            
+            // Tetrahedron core
+            const tetraGeometry = new THREE.TetrahedronGeometry(0.7);
+            const tetraMaterial = new THREE.MeshStandardMaterial({
+                color: dimensionColors[currentDimension].player,
+                emissive: dimensionColors[currentDimension].player,
+                emissiveIntensity: 0.3
+            });
+            const tetra = new THREE.Mesh(tetraGeometry, tetraMaterial);
+            group.add(tetra);
+            
+            // Orbit ring
+            const ringGeometry = new THREE.TorusGeometry(1.2, 0.1, 8, 32);
+            const ringMaterial = new THREE.MeshStandardMaterial({
+                color: dimensionColors[currentDimension].player,
+                emissive: dimensionColors[currentDimension].player,
+                emissiveIntensity: 0.2,
+                transparent: true,
+                opacity: 0.7
+            });
+            const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+            ring.rotation.x = Math.PI / 2;
+            group.add(ring);
+            
+            player = group;
+            player.position.y = 1;
+            scene.add(player);
+            
+            // Add collision data
+            player.userData.collisionRadius = 1.2;
+        }
+        
+        function generateGameElements() {
+            // Clear existing elements
+            for (const collectible of collectibles) {
+                scene.remove(collectible);
+            }
+            for (const obstacle of obstacles) {
+                scene.remove(obstacle);
+            }
+            collectibles = [];
+            obstacles = [];
+            
+            // Generate collectibles
+            for (let i = 0; i < 10; i++) {
+                createCollectible();
+            }
+            
+            // Generate obstacles
+            for (let i = 0; i < 8; i++) {
+                createObstacle();
+            }
+        }
+        
+        function createCollectible() {
+            // Create a shimmering collectible item
+            const geometry = new THREE.OctahedronGeometry(0.5, 0);
+            const material = new THREE.MeshStandardMaterial({
+                color: dimensionColors[currentDimension].collectibles,
+                emissive: dimensionColors[currentDimension].collectibles,
+                emissiveIntensity: 0.5,
+                metalness: 1.0,
+                roughness: 0.3
+            });
+            
+            const collectible = new THREE.Mesh(geometry, material);
+            
+            // Position randomly on the ground
+            const x = Math.random() * 40 - 20;
+            const z = Math.random() * 40 - 20;
+            collectible.position.set(x, 1, z);
+            
+            // Add to scene and collectibles array
+            scene.add(collectible);
+            collectibles.push(collectible);
+            
+            // Add metadata
+            collectible.userData = {
+                rotationSpeed: 0.02 + Math.random() * 0.03,
+                value: Math.floor(Math.random() * 3) + 1,
+                dimension: Math.random() > 0.5 ? 'A' : 'B',
+                collisionRadius: 1.5
+            };
+            
+            // Make some collectibles only visible in specific dimension
+            if (collectible.userData.dimension !== currentDimension) {
+                collectible.visible = false;
+            }
+        }
+        
+        function createObstacle() {
+            // Create an obstacle
+            const geometries = [
+                new THREE.BoxGeometry(2, 2, 2),
+                new THREE.ConeGeometry(1, 2, 8),
+                new THREE.DodecahedronGeometry(1.2, 0)
+            ];
+            
+            const geometry = geometries[Math.floor(Math.random() * geometries.length)];
+            const material = new THREE.MeshStandardMaterial({
+                color: dimensionColors[currentDimension].obstacles,
+                emissive: dimensionColors[currentDimension].obstacles,
+                emissiveIntensity: 0.2,
+                transparent: true,
+                opacity: 0.8
+            });
+            
+            const obstacle = new THREE.Mesh(geometry, material);
+            
+            // Position randomly on the ground
+            const x = Math.random() * 40 - 20;
+            const z = Math.random() * 40 - 20;
+            obstacle.position.set(x, 1, z);
+            
+            // Add to scene and obstacles array
+            scene.add(obstacle);
+            obstacles.push(obstacle);
+            
+            // Add metadata
+            obstacle.userData = {
+                rotationSpeed: 0.01 + Math.random() * 0.02,
+                movementSpeed: 0.03 + Math.random() * 0.02,
+                timeOffset: Math.random() * Math.PI * 2,
+                maxDistance: 2 + Math.random() * 3,
+                originalPosition: new THREE.Vector3(x, 1, z),
+                dimension: Math.random() > 0.5 ? 'A' : 'B',
+                collisionRadius: 1.2
+            };
+            
+            // Make some obstacles only visible in specific dimension
+            if (obstacle.userData.dimension !== currentDimension) {
+                obstacle.visible = false;
+            }
+        }
+        
+        function handleKeyDown(event) {
+            keyState[event.key.toLowerCase()] = true;
+            
+            // Handle dimension shift
+            if ((event.key === ' ' || event.key === 'Spacebar') && canShiftDimension && gameActive) {
+                shiftDimension();
+                canShiftDimension = false;
+                setTimeout(() => {
+                    canShiftDimension = true;
+                }, shiftCooldown);
+            }
+        }
+        
+        function handleKeyUp(event) {
+            keyState[event.key.toLowerCase()] = false;
+        }
+        
+        function handleResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        function updatePlayer() {
+            // Movement controls
+            const moveX = ((keyState['a'] || keyState['arrowleft']) ? -1 : 0) + 
+                         ((keyState['d'] || keyState['arrowright']) ? 1 : 0);
+            const moveZ = ((keyState['w'] || keyState['arrowup']) ? -1 : 0) + 
+                         ((keyState['s'] || keyState['arrowdown']) ? 1 : 0);
+                         
+            if (moveX !== 0 || moveZ !== 0) {
+                // Normalize for diagonal movement
+                const length = Math.sqrt(moveX * moveX + moveZ * moveZ);
+                const normalizedX = moveX / length;
+                const normalizedZ = moveZ / length;
+                
+                player.position.x += normalizedX * playerSpeed;
+                player.position.z += normalizedZ * playerSpeed;
+                
+                // Boundary limits
+                player.position.x = Math.max(-24, Math.min(24, player.position.x));
+                player.position.z = Math.max(-24, Math.min(24, player.position.z));
+            }
+            
+            // Rotate the ring continuously for visual effect
+            player.children[1].rotation.z += 0.02;
+        }
+        
+        function updateGameElements(time) {
+            // Update collectibles
+            for (let i = collectibles.length - 1; i >= 0; i--) {
+                const collectible = collectibles[i];
+                
+                // Rotate collectible
+                collectible.rotation.x += collectible.userData.rotationSpeed;
+                collectible.rotation.y += collectible.userData.rotationSpeed * 0.7;
+                
+                // Make collectible bob up and down
+                collectible.position.y = 1 + Math.sin(time * 0.003) * 0.2;
+                
+                // Check visibility based on dimension
+                collectible.visible = collectible.userData.dimension === currentDimension;
+                
+                // Check collision if visible
+                if (collectible.visible) {
+                    const distance = player.position.distanceTo(collectible.position);
+                    if (distance < (player.userData.collisionRadius + collectible.userData.collisionRadius) * 0.6) {
+                        // Collect item
+                        scene.remove(collectible);
+                        collectibles.splice(i, 1);
+                        
+                        // Increase score
+                        score += collectible.userData.value;
+                        document.getElementById('score').textContent = score;
+                        
+                        // Create a new collectible
+                        createCollectible();
+                    }
+                }
+            }
+            
+            // Update obstacles
+            for (const obstacle of obstacles) {
+                // Rotate obstacle
+                obstacle.rotation.x += obstacle.userData.rotationSpeed;
+                obstacle.rotation.y += obstacle.userData.rotationSpeed * 1.3;
+                
+                // Make obstacle move in a pattern
+                const timeOffset = time * 0.001 + obstacle.userData.timeOffset;
+                obstacle.position.x = obstacle.userData.originalPosition.x + Math.sin(timeOffset) * obstacle.userData.maxDistance;
+                obstacle.position.z = obstacle.userData.originalPosition.z + Math.cos(timeOffset) * obstacle.userData.maxDistance;
+                
+                // Check visibility based on dimension
+                obstacle.visible = obstacle.userData.dimension === currentDimension;
+                
+                // Check collision if visible
+                if (obstacle.visible) {
+                    const distance = player.position.distanceTo(obstacle.position);
+                    if (distance < (player.userData.collisionRadius + obstacle.userData.collisionRadius) * 0.8) {
+                        // Apply penalty
+                        score = Math.max(0, score - 5);
+                        document.getElementById('score').textContent = score;
+                        
+                        // Push player away from obstacle
+                        const direction = new THREE.Vector3()
+                            .subVectors(player.position, obstacle.position)
+                            .normalize()
+                            .multiplyScalar(1.5);
+                        
+                        player.position.x += direction.x;
+                        player.position.z += direction.z;
+                        
+                        // Boundary check after collision
+                        player.position.x = Math.max(-24, Math.min(24, player.position.x));
+                        player.position.z = Math.max(-24, Math.min(24, player.position.z));
+                    }
+                }
+            }
+        }
+        
+        function shiftDimension() {
+            // Toggle dimension
+            currentDimension = currentDimension === 'A' ? 'B' : 'A';
+            dimensionShifts++;
+            
+            // Update scene background
+            scene.background = dimensionColors[currentDimension].background;
+            
+            // Update player appearance
+            player.children[0].material.color.setHex(dimensionColors[currentDimension].player);
+            player.children[0].material.emissive.setHex(dimensionColors[currentDimension].player);
+            player.children[1].material.color.setHex(dimensionColors[currentDimension].player);
+            player.children[1].material.emissive.setHex(dimensionColors[currentDimension].player);
+            
+            // Add a visual effect for dimension shift
+            const shiftEffect = new THREE.Mesh(
+                new THREE.SphereGeometry(0.1, 16, 16),
+                new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    transparent: true,
+                    opacity: 1
+                })
+            );
+            shiftEffect.position.copy(player.position);
+            scene.add(shiftEffect);
+            
+            // Animate the effect
+            const expandEffect = setInterval(() => {
+                shiftEffect.scale.multiplyScalar(1.2);
+                shiftEffect.material.opacity -= 0.05;
+                
+                if (shiftEffect.material.opacity <= 0) {
+                    clearInterval(expandEffect);
+                    scene.remove(shiftEffect);
+                }
+            }, 30);
+            
+            // Update UI
+            document.getElementById('dimension-indicator').textContent = 'Dimension: ' + currentDimension;
+        }
+        
+        function endGame() {
+            gameActive = false;
+            
+            // Display game over screen
+            document.getElementById('final-score').textContent = score;
+            document.getElementById('dimensions-shifted').textContent = dimensionShifts;
+            document.getElementById('game-over').style.display = 'block';
+        }
+        
+        function restartGame() {
+            // Clean up
+            while(scene.children.length > 0) { 
+                scene.remove(scene.children[0]); 
+            }
+            
+            if (renderer) {
+                document.body.removeChild(renderer.domElement);
+            }
+            
+            // Start new game
+            init();
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (gameActive) {
+                updatePlayer();
+                updateGameElements(performance.now());
+            }
+            
+            renderer.render(scene, camera);
+        }
+        
+        // Start the game
+        init();
+    </script>
+</body>
+</html>
